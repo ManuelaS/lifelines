@@ -1032,6 +1032,15 @@ class TestSklearnAdapter:
         dump(clf, "filename.joblib")
         clf = load("filename.joblib")
 
+    def test_joblib_parallel(self, X, Y):
+        from joblib import Parallel, delayed
+
+        base_model = sklearn_adapter(CoxPHFitter, event_col="E")
+        clf = base_model()
+
+        Parallel(n_jobs=2, verbose=True)([delayed(clf.fit)(X, Y)])
+        clf.score(X, Y)
+
 
 def test_rmst_works_at_kaplan_meier_edge_case():
 
