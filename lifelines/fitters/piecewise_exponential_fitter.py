@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 import autograd.numpy as np
-from lifelines.fitters import KnownModelParametericUnivariateFitter
+from lifelines.fitters import KnownModelParametricUnivariateFitter
+from lifelines import utils
 
 
-class PiecewiseExponentialFitter(KnownModelParametericUnivariateFitter):
+class PiecewiseExponentialFitter(KnownModelParametricUnivariateFitter):
     r"""
     This class implements an Piecewise Exponential model for univariate data. The model has parameterized
     hazard rate:
@@ -18,7 +19,7 @@ class PiecewiseExponentialFitter(KnownModelParametericUnivariateFitter):
     You specify the breakpoints, :math:`\tau_i`, and *lifelines* will find the
     optional values for the parameters.
 
-    After calling the `.fit` method, you have access to properties like: ``survival_function_``, ``plot``, ``cumulative_hazard_``
+    After calling the ``.fit`` method, you have access to properties like: ``survival_function_``, ``plot``, ``cumulative_hazard_``
     A summary of the fit is available with the method ``print_summary()``
 
     Parameters
@@ -41,11 +42,14 @@ class PiecewiseExponentialFitter(KnownModelParametericUnivariateFitter):
         The estimated hazard (with custom timeline if provided)
     survival_function_ : DataFrame
         The estimated survival function (with custom timeline if provided)
-    cumumlative_density_ : DataFrame
+    cumulative_density_ : DataFrame
         The estimated cumulative density function (with custom timeline if provided)
+    density: DataFrame
+        The estimated density function (PDF) (with custom timeline if provided)
+
     variance_matrix_ : numpy array
         The variance matrix of the coefficients
-    median_: float
+    median_survival_time_: float
         The median time to event
     lambda_i_: float
         The fitted parameter in the model, for i = 0, 1 ... n-1 breakpoints
@@ -73,17 +77,17 @@ class PiecewiseExponentialFitter(KnownModelParametericUnivariateFitter):
             raise ValueError("First breakpoint must be greater than 0.")
 
         breakpoints = np.sort(breakpoints)
-        self.breakpoints = np.append(breakpoints, [np.inf])
-        n_breakpoints = len(self.breakpoints)
+        self.breakpoints = breakpoints
 
-        self._fitted_parameter_names = ["lambda_%d_" % i for i in range(n_breakpoints)]
+        self._fitted_parameter_names = ["lambda_%d_" % i for i in range(len(self.breakpoints) + 1)]
 
         super(PiecewiseExponentialFitter, self).__init__(*args, **kwargs)
 
     def _cumulative_hazard(self, params, times):
+        times = np.atleast_1d(times)
         n = times.shape[0]
         times = times.reshape((n, 1))
-        bp = self.breakpoints
+        bp = np.append(self.breakpoints, [np.inf])
         M = np.minimum(np.tile(bp, (n, 1)), times)
         M = np.hstack([M[:, tuple([0])], np.diff(M, axis=1)])
         return np.dot(M, 1 / params)

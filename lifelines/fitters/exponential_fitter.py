@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 import numpy as np
-from lifelines.fitters import KnownModelParametericUnivariateFitter
+from autograd import numpy as anp
+from lifelines.fitters import KnownModelParametricUnivariateFitter
 
 
-class ExponentialFitter(KnownModelParametericUnivariateFitter):
+class ExponentialFitter(KnownModelParametricUnivariateFitter):
     r"""
     This class implements an Exponential model for univariate data. The model has parameterized
     form:
@@ -18,7 +19,7 @@ class ExponentialFitter(KnownModelParametericUnivariateFitter):
 
     .. math::  h(t) = \frac{1}{\lambda}
 
-    After calling the `.fit` method, you have access to properties like: ``survival_function_``, ``lambda_``, ``cumulative_hazard_``
+    After calling the ``.fit`` method, you have access to properties like: ``survival_function_``, ``lambda_``, ``cumulative_hazard_``
     A summary of the fit is available with the method ``print_summary()``
 
     Parameters
@@ -47,7 +48,7 @@ class ExponentialFitter(KnownModelParametericUnivariateFitter):
         The lower and upper confidence intervals for the survival function
     variance_matrix_ : numpy array
         The variance matrix of the coefficients
-    median_: float
+    median_survival_time_: float
         The median time to event
     lambda_: float
         The fitted parameter in the model
@@ -59,13 +60,17 @@ class ExponentialFitter(KnownModelParametericUnivariateFitter):
         The time line to use for plotting and indexing
     entry: array or None
         The entry array provided, or None
-    cumumlative_density_ : DataFrame
+    cumulative_density_ : DataFrame
         The estimated cumulative density function (with custom timeline if provided)
+    density: DataFrame
+        The estimated density function (PDF) (with custom timeline if provided)
+
     confidence_interval_cumulative_density_ : DataFrame
         The lower and upper confidence intervals for the cumulative density
     """
 
     _fitted_parameter_names = ["lambda_"]
+    _scipy_fit_options = {"ftol": 1e-14, "gtol": 1e-8}
 
     def percentile(self, p):
         return -self.lambda_ * np.log(p)
@@ -73,3 +78,7 @@ class ExponentialFitter(KnownModelParametericUnivariateFitter):
     def _cumulative_hazard(self, params, times):
         lambda_ = params[0]
         return times / lambda_
+
+    def _log_hazard(self, params, times):
+        lambda_ = params[0]
+        return -anp.log(lambda_)

@@ -10,13 +10,16 @@ import pandas as pd
 from scipy import stats
 
 from numpy.linalg import norm, inv
-from scipy.linalg import solve as spsolve, LinAlgError
-
-
 from numpy import sum as array_sum_to_scalar
+from scipy.linalg import solve as spsolve, LinAlgError
+from autograd import elementwise_grad
+from autograd import numpy as anp
 
-from lifelines.fitters import BaseFitter
-from lifelines.statistics import chisq_test, StatisticalResult
+
+from lifelines.fitters import RegressionFitter
+from lifelines.fitters.mixins import ProportionalHazardMixin
+from lifelines.utils.printer import Printer
+from lifelines.statistics import _chisq_test_p_value, StatisticalResult
 from lifelines.utils import (
     _get_index,
     _to_list,
@@ -35,12 +38,7 @@ from lifelines.utils import (
     StepSizer,
     check_nans_or_infs,
     string_justify,
-    format_p_value,
-    format_exp_floats,
-    format_floats,
     coalesce,
-    leading_space,
-    map_leading_space,
 )
 
 __all__ = ["CoxTimeVaryingFitter"]
@@ -48,11 +46,11 @@ __all__ = ["CoxTimeVaryingFitter"]
 matrix_axis_0_sum_to_1d_array = lambda m: np.sum(m, 0)
 
 
-class CoxTimeVaryingFitter(BaseFitter):
+class CoxTimeVaryingFitter(RegressionFitter, ProportionalHazardMixin):
     r"""
     This class implements fitting Cox's time-varying proportional hazard model:
 
-        .. math::  h(t|x(t)) = h_0(t)\exp(x(t)'\beta)
+        .. math::  h(t|x(t)) = h_0(t)\exp((x(t)-\overline{x})'\beta)
 
     Parameters
     ----------
@@ -83,7 +81,9 @@ class CoxTimeVaryingFitter(BaseFitter):
     baseline_survival_: DataFrame
     """
 
-    def __init__(self, alpha=0.05, penalizer=0.0, strata=None):
+    _KNOWN_MODEL = True
+
+    def __init__(self, alpha=0.05, penalizer=0.0, l1_ratio: float = 0.0, strata=None):
         super(CoxTimeVaryingFitter, self).__init__(alpha=alpha)
         if penalizer < 0:
             raise ValueError("penalizer parameter must be >= 0.")
@@ -91,15 +91,16 @@ class CoxTimeVaryingFitter(BaseFitter):
         self.alpha = alpha
         self.penalizer = penalizer
         self.strata = strata
+        self.l1_ratio = l1_ratio
 
     def fit(
         self,
         df,
-        id_col,
         event_col,
         start_col="start",
         stop_col="stop",
         weights_col=None,
+        id_col=None,
         show_progress=False,
         step_size=None,
         robust=False,
@@ -117,9 +118,6 @@ class CoxTimeVaryingFitter(BaseFitter):
            `event_col`, plus other covariates. `duration_col` refers to
            the lifetimes of the subjects. `event_col` refers to whether
            the 'death' events was observed: 1 if observed, 0 else (censored).
-        id_col: string
-            A subject could have multiple rows in the DataFrame. This column contains
-           the unique identifier per subject.
         event_col: string
            the column in DataFrame that contains the subjects' death
            observation. If left as None, assume all individuals are non-censored.
@@ -129,9 +127,13 @@ class CoxTimeVaryingFitter(BaseFitter):
             the column that contains the end of a subject's time period.
         weights_col: string, optional
             the column that contains (possibly time-varying) weight of each subject-period row.
+        id_col: string, optional
+            A subject could have multiple rows in the DataFrame. This column contains
+           the unique identifier per subject. If not provided, it's up to the
+           user to make sure that there are no violations.
         show_progress: since the fitter is iterative, show convergence
            diagnostics.
-        robust: boolean, optional (default: True)
+        robust: bool, optional (default: True)
             Compute the robust errors using the Huber sandwich estimator, aka Wei-Lin estimate. This does not handle
           ties, so if there are high number of ties, results may significantly differ. See
           "The Robust Inference for the Cox Proportional Hazards Model", Journal of the American Statistical Association, Vol. 84, No. 408 (Dec., 1989), pp. 1074- 1078
@@ -161,11 +163,11 @@ class CoxTimeVaryingFitter(BaseFitter):
         self.id_col = id_col
         self.stop_col = stop_col
         self.start_col = start_col
-        self._time_fit_was_called = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        self._time_fit_was_called = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S") + " UTC"
 
         df = df.copy()
 
-        if not (id_col in df and event_col in df and start_col in df and stop_col in df):
+        if not (event_col in df and start_col in df and stop_col in df):
             raise KeyError("A column specified in the call to `fit` does not exist in the DataFrame provided.")
 
         if weights_col is None:
@@ -179,15 +181,15 @@ class CoxTimeVaryingFitter(BaseFitter):
             if (df[weights_col] <= 0).any():
                 raise ValueError("values in weights_col must be positive.")
 
-        df = df.rename(
-            columns={id_col: "id", event_col: "event", start_col: "start", stop_col: "stop", weights_col: "__weights"}
-        )
+        df = df.rename(columns={event_col: "event", start_col: "start", stop_col: "stop", weights_col: "__weights"})
 
-        if self.strata is None:
-            df = df.set_index("id")
-        else:
-            df = df.set_index(_to_list(self.strata) + ["id"])  # TODO: needs to be a list
+        if self.strata is not None and self.id_col is not None:
+            df = df.set_index(_to_list(self.strata) + [id_col])
             df = df.sort_index()
+        elif self.strata is not None and self.id_col is None:
+            df = df.set_index(_to_list(self.strata))
+        elif self.strata is None and self.id_col is not None:
+            df = df.set_index([id_col])
 
         events, start, stop = (
             pass_for_numeric_dtypes_or_raise_array(df.pop("event")).astype(bool),
@@ -215,7 +217,9 @@ class CoxTimeVaryingFitter(BaseFitter):
 
         self.params_ = pd.Series(params_, index=df.columns, name="coef") / self._norm_std
         self.hazard_ratios_ = pd.Series(np.exp(self.params_), index=df.columns, name="exp(coef)")
-        self.variance_matrix_ = -inv(self._hessian_) / np.outer(self._norm_std, self._norm_std)
+        self.variance_matrix_ = pd.DataFrame(
+            -inv(self._hessian_) / np.outer(self._norm_std, self._norm_std), index=df.columns
+        )
         self.standard_errors_ = self._compute_standard_errors(
             normalize(df, self._norm_mean, self._norm_std), events, start, stop, weights
         )
@@ -282,7 +286,6 @@ class CoxTimeVaryingFitter(BaseFitter):
     @property
     def summary(self):
         """Summary statistics describing the fit.
-        Set alpha property in the object before calling.
 
         Returns
         -------
@@ -290,7 +293,7 @@ class CoxTimeVaryingFitter(BaseFitter):
             Contains columns coef, np.exp(coef), se(coef), z, p, lower, upper"""
         ci = 100 * (1 - self.alpha)
         z = inv_normal_cdf(1 - self.alpha / 2)
-        with np.errstate(invalid="ignore", divide="ignore"):
+        with np.errstate(invalid="ignore", divide="ignore", over="ignore", under="ignore"):
             df = pd.DataFrame(index=self.params_.index)
             df["coef"] = self.params_
             df["exp(coef)"] = self.hazard_ratios_
@@ -325,7 +328,7 @@ class CoxTimeVaryingFitter(BaseFitter):
         df: DataFrame
         stop_times_events: DataFrame
              meta information about the subjects history
-        show_progress: boolean, optional (default: True)
+        show_progress: bool, optional (default: True)
             to show verbose output of convergence
         step_size: float
             > 0 to determine a starting step size in NR algorithm.
@@ -339,7 +342,19 @@ class CoxTimeVaryingFitter(BaseFitter):
         """
         assert precision <= 1.0, "precision must be less than or equal to 1."
 
-        _, d = df.shape
+        # soft penalizer functions, from https://www.cs.ubc.ca/cgi-bin/tr/2009/TR-2009-19.pdf
+        # soft penalizer functions, from https://www.cs.ubc.ca/cgi-bin/tr/2009/TR-2009-19.pdf
+        soft_abs = lambda x, a: 1 / a * (anp.logaddexp(0, -a * x) + anp.logaddexp(0, a * x))
+        penalizer = (
+            lambda beta, a: n
+            * 0.5
+            * self.penalizer
+            * (self.l1_ratio * soft_abs(beta, a).sum() + (1 - self.l1_ratio) * ((beta) ** 2).sum())
+        )
+        d_penalizer = elementwise_grad(penalizer)
+        dd_penalizer = elementwise_grad(d_penalizer)
+
+        n, d = df.shape
 
         # make sure betas are correct size.
         if initial_point is not None:
@@ -380,9 +395,9 @@ class CoxTimeVaryingFitter(BaseFitter):
                 self._log_likelihood_null = ll
 
             if self.penalizer > 0:
-                # add the gradient and hessian of the l2 term
-                g -= self.penalizer * beta
-                h.flat[:: d + 1] -= self.penalizer
+                ll -= penalizer(beta, 1.5 ** i)
+                g -= d_penalizer(beta, 1.5 ** i)
+                h[np.diag_indices(d)] -= dd_penalizer(beta, 1.5 ** i)
 
             try:
                 # reusing a piece to make g * inv(h) * g.T faster later
@@ -443,7 +458,7 @@ https://lifelines.readthedocs.io/en/latest/Examples.html#problems-with-convergen
             elif abs(ll) < 0.0001 and norm_delta > 1.0:
                 warnings.warn(
                     "The log-likelihood is getting suspiciously close to 0 and the delta is still large. There may be complete separation in the dataset. This may result in incorrect inference of coefficients. \
-See https://stats.stackexchange.com/questions/11109/how-to-deal-with-perfect-separation-in-logistic-regression",
+See https://stats.stackexchange.com/questions/11109/how-to-deal-with-perfect-separation-in-logistic-regression\n",
                     ConvergenceWarning,
                 )
                 converging, completed = False, False
@@ -472,14 +487,6 @@ See https://stats.stackexchange.com/questions/11109/how-to-deal-with-perfect-sep
             warnings.warn("Newton-Rhapson failed to converge sufficiently in %d steps." % max_steps, ConvergenceWarning)
 
         return beta
-
-    @property
-    def _log_likelihood(self):
-        warnings.warn(
-            "Please use `log_likelihood` property instead. `_log_likelihood` will be removed in a future version of lifelines",
-            DeprecationWarning,
-        )
-        return self.log_likelihood_
 
     def _get_gradients(self, X, events, start, stop, weights, beta):  # pylint: disable=too-many-locals
         """
@@ -536,12 +543,12 @@ See https://stats.stackexchange.com/questions/11109/how-to-deal-with-perfect-sep
 
             if tied_death_counts > 1:
 
-                # A good explaination for how Efron handles ties. Consider three of five subjects who fail at the time.
+                # A good explanation for how Efron handles ties. Consider three of five subjects who fail at the time.
                 # As it is not known a priori that who is the first to fail, so one-third of
                 # (φ1 + φ2 + φ3) is adjusted from sum_j^{5} φj after one fails. Similarly two-third
                 # of (φ1 + φ2 + φ3) is adjusted after first two individuals fail, etc.
 
-                # a lot of this is now in einstien notation for performance, but see original "expanded" code here
+                # a lot of this is now in Einstein notation for performance, but see original "expanded" code here
                 # https://github.com/CamDavidsonPilon/lifelines/blob/e7056e7817272eb5dff5983556954f56c33301b1/lifelines/fitters/cox_time_varying_fitter.py#L458-L490
 
                 tie_phi = array_sum_to_scalar(phi_i[deaths])
@@ -570,11 +577,11 @@ See https://stats.stackexchange.com/questions/11109/how-to-deal-with-perfect-sep
 
         return hessian, gradient, log_lik
 
-    def predict_log_partial_hazard(self, X):
+    def predict_log_partial_hazard(self, X) -> pd.Series:
         r"""
         This is equivalent to R's linear.predictors.
         Returns the log of the partial hazard for the individuals, partial since the
-        baseline hazard is not included. Equal to :math:`(x - \bar{x})'\beta `
+        baseline hazard is not included. Equal to :math:`(x - \bar{x})'\beta`
 
 
         Parameters
@@ -602,9 +609,9 @@ See https://stats.stackexchange.com/questions/11109/how-to-deal-with-perfect-sep
         X = X.astype(float)
         index = _get_index(X)
         X = normalize(X, self._norm_mean.values, 1)
-        return pd.DataFrame(np.dot(X, self.params_), index=index)
+        return pd.Series(np.dot(X, self.params_), index=index)
 
-    def predict_partial_hazard(self, X):
+    def predict_partial_hazard(self, X) -> pd.Series:
         r"""
         Returns the partial hazard for the individuals, partial since the
         baseline hazard is not included. Equal to :math:`\exp{(x - \bar{x})'\beta }`
@@ -629,7 +636,7 @@ See https://stats.stackexchange.com/questions/11109/how-to-deal-with-perfect-sep
         """
         return np.exp(self.predict_log_partial_hazard(X))
 
-    def print_summary(self, decimals=2, **kwargs):
+    def print_summary(self, decimals=2, style=None, **kwargs):
         """
         Print summary statistics describing the fit, the coefficients, and the error bounds.
 
@@ -637,81 +644,39 @@ See https://stats.stackexchange.com/questions/11109/how-to-deal-with-perfect-sep
         -----------
         decimals: int, optional (default=2)
             specify the number of decimal places to show
+        style: string
+            {html, ascii, latex}
         kwargs:
             print additional meta data in the output (useful to provide model names, dataset names, etc.) when comparing
             multiple outputs.
 
         """
-
-        # Print information about data first
         justify = string_justify(18)
 
-        print(self)
-        print("{} = '{}'".format(justify("event col"), self.event_col))
+        headers = []
 
+        if self.event_col:
+            headers.append(("event col", "'%s'" % self.event_col))
         if self.weights_col:
-            print("{} = '{}'".format(justify("weights col"), self.weights_col))
-
-        if self.strata:
-            print("{} = {}".format(justify("strata"), self.strata))
-
+            headers.append(("weights col", "'%s'" % self.weights_col))
         if self.penalizer > 0:
-            print("{} = {}".format(justify("penalizer"), self.penalizer))
+            headers.append(("penalizer", self.penalizer))
+        if self.strata:
+            headers.append(("strata", self.strata))
 
-        print("{} = {}".format(justify("number of subjects"), self._n_unique))
-        print("{} = {}".format(justify("number of periods"), self._n_examples))
-        print("{} = {}".format(justify("number of events"), self.event_observed.sum()))
-        print("{} = {:.{prec}f}".format(justify("log-likelihood"), self.log_likelihood_, prec=decimals))
-        print("{} = {} UTC".format(justify("time fit was run"), self._time_fit_was_called))
-
-        for k, v in kwargs.items():
-            print("{} = {}\n".format(justify(k), v))
-
-        print(end="\n")
-        print("---")
-
-        df = self.summary
-        df.columns = map_leading_space(df.columns)
-
-        print(
-            df.to_string(
-                float_format=format_floats(decimals),
-                formatters={
-                    leading_space("exp(coef)"): format_exp_floats(decimals),
-                    leading_space("exp(coef) lower 95%"): format_exp_floats(decimals),
-                    leading_space("exp(coef) upper 95%"): format_exp_floats(decimals),
-                },
-                columns=map_leading_space(
-                    [
-                        "coef",
-                        "exp(coef)",
-                        "se(coef)",
-                        "coef lower 95%",
-                        "coef upper 95%",
-                        "exp(coef) lower 95%",
-                        "exp(coef) upper 95%",
-                    ]
-                ),
-            )
-        )
-        print()
-        print(
-            df.to_string(
-                float_format=format_floats(decimals),
-                formatters={leading_space("p"): format_p_value(decimals)},
-                columns=map_leading_space(["z", "p", "-log2(p)"]),
-            )
+        headers.extend(
+            [
+                ("number of subjects", self._n_unique),
+                ("number of periods", self._n_examples),
+                ("number of events", self.event_observed.sum()),
+                ("partial log-likelihood", "{:.{prec}f}".format(self.log_likelihood_, prec=decimals)),
+                ("time fit was run", self._time_fit_was_called),
+            ]
         )
 
-        # Significance code explanation
-        print("---")
-        with np.errstate(invalid="ignore", divide="ignore"):
-            sr = self.log_likelihood_ratio_test()
-            print(
-                "Log-likelihood ratio test = {:.{prec}f} on {} df, -log2(p)={:.{prec}f}".format(
-                    sr.test_statistic, sr.degrees_freedom, -np.log2(sr.p_value), prec=decimals
-                )
-            )
+        p = Printer(self, headers, justify, decimals, kwargs)
+
+        p.print(style=style)
 
     def log_likelihood_ratio_test(self):
         """
@@ -746,7 +711,7 @@ See https://stats.stackexchange.com/questions/11109/how-to-deal-with-perfect-sep
         ll_alt = self.log_likelihood_
         test_stat = 2 * (ll_alt - ll_null)
         degrees_freedom = self.params_.shape[0]
-        p_value = chisq_test(test_stat, degrees_freedom=degrees_freedom)
+        p_value = _chisq_test_p_value(test_stat, degrees_freedom=degrees_freedom)
         return StatisticalResult(
             p_value,
             test_stat,
@@ -814,7 +779,10 @@ See https://stats.stackexchange.com/questions/11109/how-to-deal-with-perfect-sep
     def _compute_cumulative_baseline_hazard(
         self, tv_data, events, start, stop, weights
     ):  # pylint: disable=too-many-locals
-        hazards = self.predict_partial_hazard(tv_data).values
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            hazards = self.predict_partial_hazard(tv_data).values
 
         unique_death_times = np.unique(stop[events.values])
         baseline_hazard_ = pd.DataFrame(
@@ -881,5 +849,5 @@ See https://stats.stackexchange.com/questions/11109/how-to-deal-with-perfect-sep
         if self.robust:
             se = np.sqrt(self._compute_sandwich_estimator(X, events, start, stop, weights).diagonal())
         else:
-            se = np.sqrt(self.variance_matrix_.diagonal())
+            se = np.sqrt(self.variance_matrix_.values.diagonal())
         return pd.Series(se, index=self.params_.index, name="se")

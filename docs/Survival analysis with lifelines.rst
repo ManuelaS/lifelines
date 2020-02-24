@@ -6,9 +6,9 @@ Estimating univariate models
 =====================================
 
 In the previous :doc:`section</Survival Analysis intro>`,
-we introduced the use of survival analysis, the need, and the
+we introduced the applications of survival analysis and the
 mathematical objects on which it relies. In this article, we will work
-with real data and the *lifelines* library to estimate these mathematical objects.
+with real data and the *lifelines* library to estimate these objects.
 
 Estimating the survival function using Kaplan-Meier
 ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
@@ -21,7 +21,7 @@ event is the retirement of the individual. Censoring can occur if they are a) st
 of dataset compilation (2008), or b) die while in power (this includes assassinations).
 
 For example, the Bush regime began in 2000 and officially ended in 2008
-upon his retirement, thus this regime's lifespan was eight years, and there was a
+upon his retirement, thus the regime's lifespan was eight years, and there was a
 "death" event observed. On the other hand, the JFK regime lasted 2
 years, from 1961 and 1963, and the regime's official death event *was
 not* observed -- JFK died before his official retirement.
@@ -102,8 +102,7 @@ Below we fit our data with the :class:`~lifelines.fitters.kaplan_meier_fitter.Ka
 
 
 After calling the :meth:`~lifelines.fitters.kaplan_meier_fitter.KaplanMeierFitter.fit` method, the :class:`~lifelines.fitters.kaplan_meier_fitter.KaplanMeierFitter` has a property
-called :attr:`~lifelines.fitters.kaplan_meier_fitter.KaplanMeierFitter.survival_function_` (again, we follow the styling of
-scikit-learn, and append an underscore to all properties that were computational estimated).
+called :attr:`~lifelines.fitters.kaplan_meier_fitter.KaplanMeierFitter.survival_function_` (again, we follow the styling of scikit-learn, and append an underscore to all properties that were estimated).
 The property is a Pandas DataFrame, so we can call :meth:`~lifelines.fitters.kaplan_meier_fitter.KaplanMeierFitter.plot` on it:
 
 .. code:: python
@@ -117,15 +116,9 @@ The property is a Pandas DataFrame, so we can call :meth:`~lifelines.fitters.kap
 
 How do we interpret this? The y-axis represents the probability a leader is still
 around after :math:`t` years, where :math:`t` years is on the x-axis. We
-see that very few leaders make it past 20 years in office. Of course,
-like all good stats, we need to report how uncertain we are about these
-point estimates, i.e., we need confidence intervals. They are computed in
+see that very few leaders make it past 20 years in office. Of course, we need to report how uncertain we are about these point estimates, i.e., we need confidence intervals. They are computed in
 the call to :meth:`~lifelines.fitters.kaplan_meier_fitter.KaplanMeierFitter.fit`, and located under the :attr:`~lifelines.fitters.kaplan_meier_fitter.KaplanMeierFitter.confidence_interval_`
-property. (The method uses exponential Greenwood confidence interval. The mathematics are found in `these notes <https://www.math.wustl.edu/%7Esawyer/handouts/greenwood.pdf>`_.)
-
-.. math::  S(t) = Pr( T > t)
-
-Alternatively, we can call :meth:`~lifelines.fitters.kaplan_meier_fitter.KaplanMeierFitter.plot` on the :class:`~lifelines.fitters.kaplan_meier_fitter.KaplanMeierFitter` itself to plot both the KM estimate and its confidence intervals:
+property. (The method uses exponential Greenwood confidence interval. The mathematics are found in `these notes <https://www.math.wustl.edu/%7Esawyer/handouts/greenwood.pdf>`_.) We can call :meth:`~lifelines.fitters.kaplan_meier_fitter.KaplanMeierFitter.plot` on the :class:`~lifelines.fitters.kaplan_meier_fitter.KaplanMeierFitter` itself to plot both the KM estimate and its confidence intervals:
 
 .. code:: python
 
@@ -136,17 +129,22 @@ Alternatively, we can call :meth:`~lifelines.fitters.kaplan_meier_fitter.KaplanM
     :align: center
 
 The median time in office, which defines the point in time where on
-average 1/2 of the population has expired, is a property:
+average 50% of the population has expired, is a property:
 
 .. code:: python
 
-    kmf.median_
+    kmf.median_survival_time_
     #   4.0
 
 
-
 Interesting that it is only four years. That means, around the world, elected leaders
-have a 50% chance of cessation in four years or less!
+have a 50% chance of cessation in four years or less! To get the confidence interval of the median, you can use:
+
+.. code:: python
+
+    from lifelines.utils import median_survival_times
+    median_ci = median_survival_times(kmf.confidence_interval_)
+
 
 Let's segment on democratic regimes vs non-democratic regimes. Calling
 ``plot`` on either the estimate itself or the fitter object will return
@@ -160,6 +158,7 @@ an ``axis`` object, that can be used for plotting further estimates:
 
     kmf.fit(T[dem], event_observed=E[dem], label="Democratic Regimes")
     kmf.plot(ax=ax)
+
     kmf.fit(T[~dem], event_observed=E[~dem], label="Non-democratic Regimes")
     kmf.plot(ax=ax)
 
@@ -211,6 +210,7 @@ mark, you probably have a long life ahead. Meanwhile, a democratic
 leader rarely makes it past ten years, and then have a very short
 lifetime past that.
 
+
 Here the difference between survival functions is very obvious, and
 performing a statistical test seems pedantic. If the curves are more
 similar, or we possess less data, we may be interested in performing a
@@ -242,6 +242,9 @@ we rule that the series have different generators.
            260.47  <0.005    192.23
     """"
 
+There are alternative (and sometimes better) tests of survival functions, and we explain more here: `Statistically compare two populations`_
+
+
 Lets compare the different *types* of regimes present in the dataset:
 
 .. code:: python
@@ -267,9 +270,6 @@ Lets compare the different *types* of regimes present in the dataset:
 .. image:: images/lifelines_intro_all_regimes.png
 
 
-There are alternative (and sometimes better) tests of survival functions, and we explain more here: `Statistically compare two populations`_
-
---------------
 
 Getting data into the right format
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -521,16 +521,16 @@ In lifelines, estimation is available using the :class:`~lifelines.fitters.weibu
     :align: center
 
 
-Other parametric models: Exponential, Log-Logistic & Log-Normal
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Other parametric models: Exponential, Log-Logistic, Log-Normal and Splines
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Similarly, there are other parametric models in *lifelines*. Generally, which parametric model to choose is determined by either knowledge of the distribution of durations, or some sort of model goodness-of-fit. Below are the built-in parametric models, and the Nelson-Aalen nonparametric model, of the same data.
+Similarly, there are other parametric models in *lifelines*. Generally, which parametric model to choose is determined by either knowledge of the distribution of durations, or some sort of model goodness-of-fit. Below are the built-in parametric models, and the Nelson-Aalen non-parametric model, of the same data.
 
 .. code:: python
 
     from lifelines import (WeibullFitter, ExponentialFitter,
     LogNormalFitter, LogLogisticFitter, NelsonAalenFitter,
-    PiecewiseExponentialFitter, GeneralizedGammaFitter)
+    PiecewiseExponentialFitter, GeneralizedGammaFitter, SplineFitter)
 
     from lifelines.datasets import load_waltons
     data = load_waltons()
@@ -547,6 +547,7 @@ Similarly, there are other parametric models in *lifelines*. Generally, which pa
     llf = LogLogisticFitter().fit(T, E, label='LogLogisticFitter')
     pwf = PiecewiseExponentialFitter([40, 60]).fit(T, E, label='PiecewiseExponentialFitter')
     gg = GeneralizedGammaFitter().fit(T, E, label='GeneralizedGammaFitter')
+    spf = SplineFitter([6, 20, 40, 75]).fit(T, E, label='SplineFitter')
 
     wbf.plot_cumulative_hazard(ax=axes[0][0])
     exf.plot_cumulative_hazard(ax=axes[0][1])
@@ -555,6 +556,7 @@ Similarly, there are other parametric models in *lifelines*. Generally, which pa
     llf.plot_cumulative_hazard(ax=axes[1][1])
     pwf.plot_cumulative_hazard(ax=axes[1][2])
     gg.plot_cumulative_hazard(ax=axes[2][0])
+    spf.plot_cumulative_hazard(ax=axes[2][1])
 
 
 .. image:: images/waltons_cumulative_hazard.png
@@ -579,6 +581,7 @@ Parametric models can also be used to create and plot the survival function, too
     llf = LogLogisticFitter().fit(T, E, label='LogLogisticFitter')
     pwf = PiecewiseExponentialFitter([40, 60]).fit(T, E, label='PiecewiseExponentialFitter')
     gg = GeneralizedGammaFitter().fit(T, E, label='GeneralizedGammaFitter')
+    spf = SplineFitter([6, 20, 40, 75]).fit(T, E, label='SplineFitter')
 
     wbf.plot_survival_function(ax=axes[0][0])
     exf.plot_survival_function(ax=axes[0][1])
@@ -587,6 +590,7 @@ Parametric models can also be used to create and plot the survival function, too
     llf.plot_survival_function(ax=axes[1][1])
     pwf.plot_survival_function(ax=axes[1][2])
     gg.plot_survival_function(ax=axes[2][0])
+    spf.plot_survival_function(ax=axes[2][1])
 
 .. image:: images/waltons_survival_function.png
 
@@ -614,7 +618,10 @@ With parametric models, we have a functional form that allows us to extend the s
     :width: 650px
     :align: center
 
-To aid model selection, *lifelines* has provided qq-plots, `Selecting a parametric model using QQ plots`_.
+Model Selection
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When the underlying data generation distribution is unknown, we resort to measures of fit to tell us which model is most appropriate. *lifelines* has provided qq-plots, `Selecting a parametric model using QQ plots`_, and also tools to compare AIC and other measures: `Selecting a parametric model using AIC`_.
 
 
 Other types of censoring
@@ -681,7 +688,7 @@ Instead of producing a survival function, left-censored data analysis is more in
 
 .. image:: images/lifelines_intro_lcd.png
 
-Alternatively, you can use a parametric model to model the data. This allows for you to "peer" below the LOD, however using a parametric model means you need to correctly specify the distribution. You can use plots like qq-plots to help invalidate some distributions, see `Selecting a parametric model using QQ plots`_.
+Alternatively, you can use a parametric model to model the data. This allows for you to "peer" below the LOD, however using a parametric model means you need to correctly specify the distribution. You can use plots like qq-plots to help invalidate some distributions, see `Selecting a parametric model using QQ plots`_ and `Selecting a parametric model using AIC`_.
 
 
 .. code:: python
@@ -794,3 +801,4 @@ So subject #77, the subject at the top, was diagnosed with AIDS 7.5 years ago, b
 .. _Piecewise Exponential Models and Creating Custom Models: jupyter_notebooks/Piecewise%20Exponential%20Models%20and%20Creating%20Custom%20Models.html
 .. _Statistically compare two populations: Examples.html#statistically-compare-two-populations
 .. _Selecting a parametric model using QQ plots: Examples.html#selecting-a-parametric-model-using-qq-plots
+.. _Selecting a parametric model using AIC: Examples.html#selecting-a-parametric-model-using-AIC

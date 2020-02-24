@@ -5,7 +5,7 @@ import pytest
 import os
 import numpy as np
 import pandas as pd
-from pandas.util.testing import assert_frame_equal, assert_series_equal
+from pandas.testing import assert_frame_equal, assert_series_equal
 import numpy.testing as npt
 from numpy.linalg import norm, lstsq
 from numpy.random import randn
@@ -15,6 +15,7 @@ from lifelines.datasets import load_regression_dataset, load_larynx, load_walton
 from lifelines import utils
 from lifelines import metrics
 from lifelines.utils.sklearn_adapter import sklearn_adapter
+from lifelines.utils.safe_exp import safe_exp
 
 
 def test_format_p_values():
@@ -381,23 +382,8 @@ def test_cross_validator_returns_fitters_k_results():
 
 def test_cross_validator_with_predictor():
     cf = CoxPHFitter()
-    results = utils.k_fold_cross_validation(
-        cf, load_regression_dataset(), duration_col="T", event_col="E", k=3, predictor="predict_expectation"
-    )
+    results = utils.k_fold_cross_validation(cf, load_regression_dataset(), duration_col="T", event_col="E", k=3)
     assert len(results) == 3
-
-
-def test_cross_validator_with_predictor_and_kwargs():
-    cf = CoxPHFitter()
-    results_06 = utils.k_fold_cross_validation(
-        cf,
-        load_regression_dataset(),
-        duration_col="T",
-        k=3,
-        predictor="predict_percentile",
-        predictor_kwargs={"p": 0.6},
-    )
-    assert len(results_06) == 3
 
 
 def test_cross_validator_with_stratified_cox_model():
@@ -406,15 +392,10 @@ def test_cross_validator_with_stratified_cox_model():
 
 
 def test_cross_validator_with_specific_loss_function():
-    def square_loss(y_actual, y_pred):
-        return ((y_actual - y_pred) ** 2).mean()
-
     cf = CoxPHFitter()
     results_sq = utils.k_fold_cross_validation(
-        cf, load_regression_dataset(), evaluation_measure=square_loss, duration_col="T", event_col="E"
+        cf, load_regression_dataset(), scoring_method="concordance_index", duration_col="T", event_col="E"
     )
-    results_con = utils.k_fold_cross_validation(cf, load_regression_dataset(), duration_col="T", event_col="E")
-    assert list(results_sq) != list(results_con)
 
 
 def test_concordance_index():
@@ -1021,7 +1002,6 @@ class TestSklearnAdapter:
         assert clf.best_params_ == {"l1_ratio": 0.5, "model_ancillary": False, "penalizer": 0.01}
         assert clf.predict(X).shape[0] == X.shape[0]
 
-    @pytest.mark.xfail
     def test_joblib(self, X, Y):
         from joblib import dump, load
 
@@ -1040,6 +1020,13 @@ class TestSklearnAdapter:
 
         Parallel(n_jobs=2, verbose=True)([delayed(clf.fit)(X, Y)])
         clf.score(X, Y)
+
+    @pytest.mark.xfail
+    def test_sklearn_check():
+        from sklearn.utils.estimator_checks import check_estimator
+
+        base_model = sklearn_adapter(WeibullAFTFitter, event_col="E")
+        check_estimator(base_model())
 
 
 def test_rmst_works_at_kaplan_meier_edge_case():
@@ -1080,3 +1067,52 @@ def test_rmst_approximate_solution():
             )
             < 0.001
         )
+
+
+def test_rmst_variance():
+
+    T = np.random.exponential(2, 1000)
+    expf = ExponentialFitter().fit(T)
+    hazard = 1 / expf.lambda_
+    t = 1
+
+    sq = 2 / hazard ** 2 * (1 - np.exp(-hazard * t) * (1 + hazard * t))
+    actual_mean = 1 / hazard * (1 - np.exp(-hazard * t))
+    actual_var = sq - actual_mean ** 2
+
+    assert abs(utils.restricted_mean_survival_time(expf, t=t, return_variance=True)[0] - actual_mean) < 0.001
+    assert abs(utils.restricted_mean_survival_time(expf, t=t, return_variance=True)[1] - actual_var) < 0.001
+
+
+def test_find_best_parametric_model():
+    T = np.random.exponential(2, 1000)
+    E = np.ones_like(T)
+
+    model, score = utils.find_best_parametric_model(T, E)
+    assert True
+
+
+def test_find_best_parametric_model_can_accept_other_models():
+    T = np.random.exponential(2, 1000)
+    model, score = utils.find_best_parametric_model(T, additional_models=[ExponentialFitter(), ExponentialFitter()])
+    assert True
+
+
+def test_find_best_parametric_model_with_BIC():
+    T = np.random.exponential(2, 1000)
+    model, score = utils.find_best_parametric_model(T, scoring_method="BIC")
+    assert True
+
+
+def test_safe_exp():
+    from lifelines.utils.safe_exp import MAX
+
+    assert safe_exp(4.0) == np.exp(4.0)
+    assert safe_exp(MAX) == np.exp(MAX)
+    assert safe_exp(MAX + 1) == np.exp(MAX)
+
+    from autograd import grad
+
+    assert grad(safe_exp)(4.0) == np.exp(4.0)
+    assert grad(safe_exp)(MAX) == np.exp(MAX)
+    assert grad(safe_exp)(MAX + 1) == np.exp(MAX)

@@ -137,40 +137,33 @@ This is a good metric for comparing two survival curves, as their difference rep
     ix = df['group'] == 'miR-137'
     T, E = df['T'], df['E']
 
+    time_limit = 50
+
     kmf_exp = KaplanMeierFitter().fit(T[ix], E[ix], label='exp')
+    rmst_exp = restricted_mean_survival_time(kmf_exp, t=time_limit)
+
     kmf_con = KaplanMeierFitter().fit(T[~ix], E[~ix], label='control')
+    rmst_con = restricted_mean_survival_time(kmf_con, t=time_limit)
 
-    limit = 50
 
-    rmst_exp = restricted_mean_survival_time(kmf_exp, t=limit)
-    rmst_con = restricted_mean_survival_time(kmf_con, t=limit)
 
+Furthermore, there exist plotting functions to plot the RMST:
+
+.. code-block:: python
+
+
+    from lifelines.plotting import rmst_plot
     ax = plt.subplot(311)
-    kmf_exp.plot(ax=ax, c="#0C7BDC", ci_show=False)
-    sf_exp_at_limit = kmf_exp.predict(np.append(kmf_exp.timeline, limit)).sort_index().loc[:limit]
-    ax.fill_between(sf_exp_at_limit.index, sf_exp_at_limit.values, step='post', color="#0C7BDC", alpha=0.20)
-    ax.axvline(limit, ls='--', c='k')
-    ax.text(10, 0.3, "%.3f" % rmst_exp)
-    ax.set_xlim(0, 65)
+    rmst_plot(kmf_exp, t=time_limit, ax=ax)
 
 
     ax = plt.subplot(312)
-    kmf_con.plot(ax=ax, c="#FFC20A", ci_show=False)
-    sf_con_at_limit = kmf_con.predict(np.append(kmf_con.timeline, limit)).sort_index().loc[:limit]
-    ax.fill_between(sf_con_at_limit.index, sf_con_at_limit.values, step='post', color="#FFC20A", alpha=0.20)
-    ax.axvline(limit, ls='--', c='k')
-    ax.text(10, 0.4, "%.3f" % rmst_con)
-    ax.set_xlim(0, 65)
+    rmst_plot(kmf_con, t=time_limit, ax=ax)
 
 
     ax = plt.subplot(313)
-    kmf_con.plot(ax=ax, c="#FFC20A", ci_show=False)
-    kmf_exp.plot(ax=ax, c="#0C7BDC", ci_show=False)
-    timeline = np.unique(T.tolist() + [limit])
-    ax.axvline(limit, ls='--', c='k')
-    ax.fill_between(timeline[timeline<=limit], kmf_con.predict(timeline).loc[:limit], kmf_exp.predict(timeline).loc[:limit], step="post", color='k', alpha=0.10)
-    ax.text(34, 0.4, "%.3f" % (rmst_con - rmst_exp))
-    ax.set_xlim(0, 65)
+    rmst_plot(kmf_exp, model2=kmf_con, t=time_limit, ax=ax)
+
 
 
 .. image:: images/rmst_example.png
@@ -235,6 +228,36 @@ QQ plots normally are constructed by sorting the values. However, this isn't app
 This graphical test can be used to invalidate models. For example, in the above figure, we can see that only the log-normal parametric model is appropriate (we expect deviance in the tails, but not too much). Another use case is choosing the correct parametric AFT model.
 
 The :func:`~lifelines.plotting.qq_plots` also works with left censorship as well.
+
+Selecting a parametric model using AIC
+###############################################
+
+
+For univariate models (later to be extended to regression models), a natural way to compare different models is the AIC:
+
+.. math::  \text{AIC}(\text{model}) = -2 \text{ll} + 2k
+
+where :math:`k` is the number of parameters (degrees-of-freedom) of the model and :math:`\text{ll}` is the maximum log-likelihood. The model with the lowest AIC is desirable, since it's a trade off between maximizing the log-likelihood with as few parameters as possible.
+
+*lifelines* has a built in function to automate AIC comparisons between univariate parametric models:
+
+.. code:: python
+
+    from lifelines.utils import find_best_parametric_model
+    from lifelines.datasets import load_lymph_node
+
+    T = load_lymph_node()['rectime']
+    E = load_lymph_node()['censrec']
+
+    best_model, best_aic_ = find_best_parametric_model(T, E)
+
+    print(best_model)
+    # <lifelines.SplineFitter:"Spline_estimate", fitted with 686 total observations, 387 right-censored observations>
+
+    best_model.plot_hazard()
+
+
+.. image:: images/best_parametric_model.png
 
 
 Plotting multiple figures on a plot
@@ -320,21 +343,6 @@ Hide confidence intervals
 .. image:: /images/ci_show_plot.png
     :width: 500px
     :align: center
-
-
-Invert axis
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-.. code-block:: python
-
-    kmf.fit(T, E, label="kmf.plot(invert_y_axis=True)")
-    kmf.plot(invert_y_axis=True)
-
-.. image:: /images/invert_y_axis.png
-    :width: 500px
-    :align: center
-
-.. note:: This is deprecated and we suggest to use `kmf.plot_cumulative_density()` instead.
 
 
 Displaying at-risk counts below plots
@@ -873,3 +881,28 @@ When you want to save (and later load) a *lifelines* model to disk, you can use 
     s_kmf = dumps(kmf)
     kmf_new = loads(s_kmf)
     kmf.summary
+
+
+Produce a LaTex or HTML table
+##########################################
+
+New in version 0.23.1, *lifelines* models now have the ability to output a LaTeX or HTML table from the ``print_summary`` option:
+
+
+.. code-block:: python
+
+    from lifelines.datasets import load_rossi
+    from lifelines import CoxPHFitter
+
+    rossi = load_rossi()
+
+    cph = CoxPHFitter().fit(rossi, 'week', 'arrest')
+
+    # print a LaTeX table:
+    cph.print_summary(style="latex")
+
+    # print a HTML summary and table:
+    cph.print_summary(style="html")
+
+
+In order to use the produced table summary in LaTeX, make sure you import the package ``booktabs`` in your preamble (``\usepackage{booktabs}``), since it is required to `display the table properly. <https://en.wikibooks.org/wiki/LaTeX/Tables#Using_booktabs>`_

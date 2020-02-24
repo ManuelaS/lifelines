@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # pylint: skip-file
 
+from typing import List
 from lifelines.fitters.weibull_fitter import WeibullFitter
 from lifelines.fitters.exponential_fitter import ExponentialFitter
 from lifelines.fitters.nelson_aalen_fitter import NelsonAalenFitter
@@ -19,6 +20,8 @@ from lifelines.fitters.log_normal_aft_fitter import LogNormalAFTFitter
 from lifelines.fitters.piecewise_exponential_regression_fitter import PiecewiseExponentialRegressionFitter
 from lifelines.fitters.generalized_gamma_fitter import GeneralizedGammaFitter
 from lifelines.fitters.generalized_gamma_regression_fitter import GeneralizedGammaRegressionFitter
+from lifelines.fitters.spline_fitter import SplineFitter
+from lifelines.fitters.mixture_cure_fitter import MixtureCureFitter
 
 
 from lifelines.version import __version__
@@ -43,4 +46,6 @@ __all__ = [
     "GeneralizedGammaRegressionFitter",
     "PiecewiseExponentialFitter",
     "PiecewiseExponentialRegressionFitter",
+    "SplineFitter",
+    "MixtureCureFitter",
 ]

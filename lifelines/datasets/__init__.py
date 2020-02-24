@@ -90,7 +90,7 @@ def load_holly_molly_polly(**kwargs):
         4  P       1        1            0          20   0   20
 
     """
-    return _load_dataset("holly_molly_polly.tsv", sep="\s", **kwargs)
+    return _load_dataset("holly_molly_polly.tsv", sep=r"\s", **kwargs)
 
 
 def load_leukemia(**kwargs):
@@ -517,11 +517,42 @@ def load_lupus(**kwargs):
 
     Note
     ------
-    I transcribed this from the original paper, and highly suspect there are differences.
+    I transcribed this from the original paper, and highly suspect there are differences. See Notes below.
 
     References
     -----------
     Merrell, M., & Shulman, L. E. (1955). Determination of prognosis in chronic disease, illustrated by systemic lupus erythematosus. Journal of Chronic Diseases, 1(1), 12–32. doi:10.1016/0021-9681(55)90018-7
 
+
+    Notes
+    ------
+
+    In lifelines v0.23.7, two rows were updated with more correct data (transcription problems originally.)
+
     """
     return _load_dataset("merrell1955.csv", index_col=0, **kwargs)
+
+
+def load_lymph_node(**kwargs):
+    """
+    References
+    -----------
+    Schmoor, C., Sauerbrei, W. Bastert, G., Schumacher, M. (2000). Role of Isolated Locoregional Recurrence of Breast Cancer: Results of Four Prospective Studies. Journal of Clinical Oncology, 18(8), 1696-1708.
+
+    Schumacher, M., Bastert, G., Bojar, H., Hiibner, K., Olschewski, M., Sauerbrei, W., Schmoor, C., Beyerle, C., Neumann, R.L.A. and Rauschecker, H.F. for the German Breast Cancer Study Group (GBSG) (1994). A randomized 2 x 2 trial evaluating hormonal treatment and the duration of chemotherapy in node-positive breast cancer patients. Journal of Clinical Oncology, 12, 2086-2093.
+
+    Hosmer, D.W. and Lemeshow, S. and May, S. (2008). Applied Survival Analysis: Regression Modeling of Time to Event Data: Second Edition, John Wiley and Sons Inc., New York, NY
+    """
+    return _load_dataset("lymph_node.csv", index_col=0, **kwargs)
+
+
+def load_c_botulinum_lag_phase(**kwargs):
+    """
+    A dataset from [1] that represents the duration of the lag phase for C. botulinum, measured in days. The data is left and right censored.
+
+    References
+    -----------
+    Montville, THOMAS J. "Interaction of pH and NaCl on culture density of Clostridium botulinum 62A." Appl. Environ. Microbiol. 46.4 (1983): 961-963.
+
+    """
+    return _load_dataset("c_botulinum_lag_phase.csv", **kwargs)

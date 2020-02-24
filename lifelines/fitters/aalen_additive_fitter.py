@@ -1,6 +1,4 @@
 # -*- coding: utf-8 -*-
-
-
 import warnings
 from datetime import datetime
 import time
@@ -10,7 +8,8 @@ import pandas as pd
 from numpy.linalg import LinAlgError
 from scipy.integrate import trapz
 
-from lifelines.fitters import BaseFitter
+from lifelines.fitters import RegressionFitter
+from lifelines.utils.printer import Printer
 from lifelines.utils import (
     _get_index,
     inv_normal_cdf,
@@ -33,7 +32,7 @@ from lifelines.utils import (
 )
 
 
-class AalenAdditiveFitter(BaseFitter):
+class AalenAdditiveFitter(RegressionFitter):
 
     r"""
     This class fits the regression model:
@@ -59,10 +58,10 @@ class AalenAdditiveFitter(BaseFitter):
     coef_penalizer: float, optional (default: 0)
       Attach a L2 penalizer to the size of the coefficients during regression. This improves
       stability of the estimates and controls for high correlation between covariates.
-      For example, this shrinks the absolute value of :math:`c_{i,t}`.
+      For example, this shrinks the magnitude of :math:`c_{i,t}`.
     smoothing_penalizer: float, optional (default: 0)
       Attach a L2 penalizer to difference between adjacent (over time) coefficients. For
-      example, this shrinks the absolute value of :math:`c_{i,t} - c_{i,t+1}`.
+      example, this shrinks the magnitude of :math:`c_{i,t} - c_{i,t+1}`.
 
     Attributes
     ----------
@@ -79,6 +78,7 @@ class AalenAdditiveFitter(BaseFitter):
     weights: array
         The event_observed variable provided
     """
+    _KNOWN_MODEL = True
 
     def __init__(self, fit_intercept=True, alpha=0.05, coef_penalizer=0.0, smoothing_penalizer=0.0):
         super(AalenAdditiveFitter, self).__init__(alpha=alpha)
@@ -124,7 +124,7 @@ class AalenAdditiveFitter(BaseFitter):
             identical observations.
             This can be used for sampling weights.
 
-        show_progress: boolean, optional (default=False)
+        show_progress: bool, optional (default=False)
             Since the fitter is iterative, show iteration number.
 
 
@@ -358,7 +358,7 @@ It's important to know that the naive variance estimates of the coefficients are
         """
         return np.exp(-self.predict_cumulative_hazard(X))
 
-    def predict_percentile(self, X, p=0.5):
+    def predict_percentile(self, X, p=0.5) -> pd.Series:
         """
         Returns the median lifetimes for the individuals.
         http://stats.stackexchange.com/questions/102986/percentile-loss-functions
@@ -374,9 +374,9 @@ It's important to know that the naive variance estimates of the coefficients are
 
         """
         index = _get_index(X)
-        return qth_survival_times(p, self.predict_survival_function(X)[index]).T
+        return qth_survival_times(p, self.predict_survival_function(X)[index]).T.squeeze()
 
-    def predict_median(self, X):
+    def predict_median(self, X) -> pd.Series:
         """
 
         Parameters
@@ -390,7 +390,7 @@ It's important to know that the naive variance estimates of the coefficients are
         """
         return self.predict_percentile(X, 0.5)
 
-    def predict_expectation(self, X):
+    def predict_expectation(self, X) -> pd.Series:
         """
         Compute the expected lifetime, E[T], using covariates X.
 
@@ -405,7 +405,7 @@ It's important to know that the naive variance estimates of the coefficients are
         """
         index = _get_index(X)
         t = self._index
-        return pd.DataFrame(trapz(self.predict_survival_function(X)[index].values.T, t), index=index)
+        return pd.Series(trapz(self.predict_survival_function(X)[index].values.T, t), index=index)
 
     def _compute_confidence_intervals(self):
         ci = 100 * (1 - self.alpha)
@@ -437,7 +437,7 @@ It's important to know that the naive variance estimates of the coefficients are
         assert loc is None or iloc is None, "Cannot set both loc and iloc in call to .plot"
 
         def shaded_plot(ax, x, y, y_upper, y_lower, **kwargs):
-            base_line, = ax.plot(x, y, drawstyle="steps-post", **kwargs)
+            (base_line,) = ax.plot(x, y, drawstyle="steps-post", **kwargs)
             ax.fill_between(x, y_lower, y2=y_upper, alpha=0.25, color=base_line.get_color(), linewidth=1.0, step="post")
 
         def create_df_slicer(loc, iloc):
@@ -533,7 +533,7 @@ It's important to know that the naive variance estimates of the coefficients are
         df["se(slope(coef))"] = se
         return df
 
-    def print_summary(self, decimals=2, **kwargs):
+    def print_summary(self, decimals=2, style=None, **kwargs):
         """
         Print summary statistics describing the fit, the coefficients, and the error bounds.
 
@@ -541,44 +541,58 @@ It's important to know that the naive variance estimates of the coefficients are
         -----------
         decimals: int, optional (default=2)
             specify the number of decimal places to show
+        style: string
+            {html, ascii, latex}
         kwargs:
             print additional meta data in the output (useful to provide model names, dataset names, etc.) when comparing
             multiple outputs.
 
         """
+        justify = string_justify(25)
 
-        # Print information about data first
-        justify = string_justify(18)
-        print(self)
-        print("{} = '{}'".format(justify("duration col"), self.duration_col))
-        print("{} = '{}'".format(justify("event col"), self.event_col))
+        headers = []
+        headers.append(("duration col", "'%s'" % self.duration_col))
+
+        if self.event_col:
+            headers.append(("event col", "'%s'" % self.event_col))
         if self.weights_col:
-            print("{} = '{}'".format(justify("weights col"), self.weights_col))
-
+            headers.append(("weights col", "'%s'" % self.weights_col))
         if self.coef_penalizer > 0:
-            print("{} = '{}'".format(justify("coef penalizer"), self.coef_penalizer))
-
+            headers.append(("coef penalizer", self.coef_penalizer))
         if self.smoothing_penalizer > 0:
-            print("{} = '{}'".format(justify("smoothing penalizer"), self.smoothing_penalizer))
+            headers.append(("smoothing penalizer", self.smoothing_penalizer))
 
-        print("{} = {}".format(justify("number of subjects"), self._n_examples))
-        print("{} = {}".format(justify("number of events"), self.event_observed.sum()))
-        print("{} = {}".format(justify("time fit was run"), self._time_fit_was_called))
-
-        for k, v in kwargs.items():
-            print("{} = {}\n".format(justify(k), v))
-
-        print(end="\n")
-        print("---")
-
-        df = self.summary
-        print(
-            df.to_string(
-                float_format=format_floats(decimals),
-                formatters={"p": format_p_value(decimals), "exp(coef)": format_exp_floats(decimals)},
-            )
+        headers.extend(
+            [
+                ("number of subjects", self._n_examples),
+                ("number of events observed", self.event_observed.sum()),
+                ("time fit was run", self._time_fit_was_called),
+            ]
         )
 
-        # Significance code explanation
-        print("---")
-        print("Concordance = {:.{prec}f}".format(self.score_, prec=decimals))
+        p = Printer(self, headers, justify, decimals, kwargs)
+
+        p.print(style=style)
+
+    def score(self, df: pd.DataFrame, scoring_method: str = "log_likelihood") -> float:
+        """
+        Score the data in df on the fitted model. With default scoring method, returns
+        the *average partial log-likelihood*.
+
+        Parameters
+        ----------
+        df: DataFrame
+            the dataframe with duration col, event col, etc.
+        scoring_method: str
+            one of {'log_likelihood', 'concordance_index'}
+            log_likelihood: returns the average unpenalized partial log-likelihood.
+            concordance_index: returns the concordance-index
+        """
+        if scoring_method == "log_likelihood":
+            raise NotImplementedError("Only concordance_index is available")
+
+        T = df.pop(self.duration_col).astype(float)
+        E = df.pop(self.event_col).astype(bool)
+
+        predictions = self.predict_median(df)
+        return concordance_index(T, predictions, event_observed=E)

@@ -8,11 +8,17 @@ from lifelines.utils import _get_index
 from lifelines.fitters import ParametericAFTRegressionFitter
 from lifelines.utils.safe_exp import safe_exp
 
+from autograd.builtins import DictBox
+from autograd.numpy.numpy_boxes import ArrayBox
+from lifelines.utils import DataframeSliceDict
+from numpy import ndarray
+from typing import Dict, List, Optional, Union
+
 
 class LogNormalAFTFitter(ParametericAFTRegressionFitter):
     r"""
     This class implements a Log-Normal AFT model. The model has parameterized
-    form, with :math:`\mu(x) = \exp\left(a_0 + a_1x_1 + ... + a_n x_n \right)`,
+    form, with :math:`\mu(x) = a_0 + a_1x_1 + ... + a_n x_n`,
     and optionally, :math:`\sigma(y) = \exp\left(b_0 + b_1 y_1 + ... + b_m y_m \right)`,
 
     The cumulative hazard rate is
@@ -28,7 +34,7 @@ class LogNormalAFTFitter(ParametericAFTRegressionFitter):
     alpha: float, optional (default=0.05)
         the level in the confidence intervals.
 
-    fit_intercept: boolean, optional (default=True)
+    fit_intercept: bool, optional (default=True)
         Allow lifelines to add an intercept column of 1s to df, and ancillary_df if applicable.
 
     penalizer: float, optional (default=0.0)
@@ -61,13 +67,15 @@ class LogNormalAFTFitter(ParametericAFTRegressionFitter):
     score_: float
         the concordance index of the model.
     """
+    _primary_parameter_name = "mu_"
+    _ancillary_parameter_name = "sigma_"
 
     def __init__(self, alpha=0.05, penalizer=0.0, l1_ratio=0.0, fit_intercept=True, model_ancillary=False):
-        self._primary_parameter_name = "mu_"
-        self._ancillary_parameter_name = "sigma_"
         super(LogNormalAFTFitter, self).__init__(alpha, penalizer, l1_ratio, fit_intercept, model_ancillary)
 
-    def _cumulative_hazard(self, params, T, Xs):
+    def _cumulative_hazard(
+        self, params: Union[DictBox, Dict[str, ndarray]], T: Union[float, ndarray], Xs: DataframeSliceDict
+    ) -> Union[ndarray, ArrayBox]:
         mu_params = params["mu_"]
         mu_ = np.dot(Xs["mu_"], mu_params)
 
@@ -76,7 +84,7 @@ class LogNormalAFTFitter(ParametericAFTRegressionFitter):
         Z = (np.log(T) - mu_) / sigma_
         return -norm.logsf(Z)
 
-    def _log_hazard(self, params, T, Xs):
+    def _log_hazard(self, params: DictBox, T: Union[float, ndarray], Xs: DataframeSliceDict) -> ArrayBox:
         mu_params = params["mu_"]
         mu_ = np.dot(Xs["mu_"], mu_params)
 
@@ -99,7 +107,14 @@ class LogNormalAFTFitter(ParametericAFTRegressionFitter):
         Z = (np.log(T) - mu_) / sigma_
         return norm.logcdf(Z)
 
-    def predict_percentile(self, df, ancillary_df=None, p=0.5, conditional_after=None):
+    def predict_percentile(
+        self,
+        df: pd.DataFrame,
+        *,
+        ancillary_df: Optional[pd.DataFrame] = None,
+        p: float = 0.5,
+        conditional_after: Optional[ndarray] = None
+    ) -> pd.Series:
         """
         Returns the median lifetimes for the individuals, by default. If the survival curve of an
         individual does not cross ``p``, then the result is infinity.
@@ -120,7 +135,7 @@ class LogNormalAFTFitter(ParametericAFTRegressionFitter):
         conditional_after: iterable, optional
             Must be equal is size to df.shape[0] (denoted `n` above).  An iterable (array, list, series) of possibly non-zero values that represent how long the
             subject has already lived for. Ex: if :math:`T` is the unknown event time, then this represents
-            :math`T | T > s`. This is useful for knowing the *remaining* hazard/survival of censored subjects.
+            :math:`T | T > s`. This is useful for knowing the *remaining* hazard/survival of censored subjects.
             The new timeline is the remaining duration of the subject, i.e. normalized back to starting at 0.
 
 
@@ -136,18 +151,18 @@ class LogNormalAFTFitter(ParametericAFTRegressionFitter):
         exp_mu_, sigma_ = self._prep_inputs_for_prediction_and_return_scores(df, ancillary_df)
 
         if conditional_after is None:
-            return pd.DataFrame(exp_mu_ * np.exp(np.sqrt(2) * sigma_ * erfinv(2 * (1 - p) - 1)), index=_get_index(df))
+            return pd.Series(exp_mu_ * np.exp(np.sqrt(2) * sigma_ * erfinv(2 * (1 - p) - 1)), index=_get_index(df))
         else:
             conditional_after = np.asarray(conditional_after)
             Z = (np.log(conditional_after) - np.log(exp_mu_)) / sigma_
             S = norm.sf(Z)
 
-            return pd.DataFrame(
+            return pd.Series(
                 exp_mu_ * np.exp(np.sqrt(2) * sigma_ * erfinv(2 * (1 - p * S) - 1)) - conditional_after,
                 index=_get_index(df),
             )
 
-    def predict_expectation(self, df, ancillary_df=None):
+    def predict_expectation(self, df: pd.DataFrame, ancillary_df: Optional[pd.DataFrame] = None) -> pd.Series:
         """
         Predict the expectation of lifetimes, :math:`E[T | x]`.
 
@@ -174,4 +189,4 @@ class LogNormalAFTFitter(ParametericAFTRegressionFitter):
         predict_median
         """
         exp_mu_, sigma_ = self._prep_inputs_for_prediction_and_return_scores(df, ancillary_df)
-        return pd.DataFrame(exp_mu_ * np.exp(sigma_ ** 2 / 2), index=_get_index(df))
+        return pd.Series(exp_mu_ * np.exp(sigma_ ** 2 / 2), index=_get_index(df))

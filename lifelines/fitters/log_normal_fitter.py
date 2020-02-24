@@ -3,11 +3,11 @@
 from scipy.special import erfinv
 import autograd.numpy as np
 from autograd.scipy.stats import norm
-from lifelines.fitters import KnownModelParametericUnivariateFitter
+from lifelines.fitters import KnownModelParametricUnivariateFitter
 from lifelines.utils import CensoringType
 
 
-class LogNormalFitter(KnownModelParametericUnivariateFitter):
+class LogNormalFitter(KnownModelParametricUnivariateFitter):
     r"""
     This class implements an Log Normal model for univariate data. The model has parameterized
     form:
@@ -19,7 +19,7 @@ class LogNormalFitter(KnownModelParametericUnivariateFitter):
 
     .. math::  H(t) = -\log\left(1 - \Phi\left(\frac{\log(t) - \mu}{\sigma}\right)\right)
 
-    After calling the `.fit` method, you have access to properties like: ``survival_function_``, ``mu_``, ``sigma_``.
+    After calling the ``.fit`` method, you have access to properties like: ``survival_function_``, ``mu_``, ``sigma_``.
     A summary of the fit is available with the method ``print_summary()``
 
     Parameters
@@ -36,11 +36,14 @@ class LogNormalFitter(KnownModelParametericUnivariateFitter):
         The estimated hazard (with custom timeline if provided)
     survival_function_ : DataFrame
         The estimated survival function (with custom timeline if provided)
-    cumumlative_density_ : DataFrame
+    cumulative_density_ : DataFrame
         The estimated cumulative density function (with custom timeline if provided)
+    density: DataFrame
+        The estimated density function (PDF) (with custom timeline if provided)
+
     variance_matrix_ : numpy array
         The variance matrix of the coefficients
-    median_: float
+    median_survival_time_: float
         The median time to event
     mu_: float
         The fitted parameter in the model
@@ -56,8 +59,11 @@ class LogNormalFitter(KnownModelParametericUnivariateFitter):
         The entry array provided, or None
     """
 
+    mu_: float
+    sigma_: float
     _fitted_parameter_names = ["mu_", "sigma_"]
     _bounds = [(None, None), (0, None)]
+    _compare_to_values = np.array([1.0, 1.0])
 
     def _create_initial_point(self, Ts, E, *args):
         if CensoringType.is_right_censoring(self):
@@ -69,10 +75,10 @@ class LogNormalFitter(KnownModelParametericUnivariateFitter):
         return np.array([np.median(log_T), 1.0])
 
     @property
-    def median_(self):
+    def median_survival_time_(self) -> float:
         return np.exp(self.mu_)
 
-    def percentile(self, p):
+    def percentile(self, p) -> float:
         return np.exp(self.mu_ + np.sqrt(2 * self.sigma_ ** 2) * erfinv(1 - 2 * p))
 
     def _cumulative_hazard(self, params, times):

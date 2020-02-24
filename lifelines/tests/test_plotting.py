@@ -22,7 +22,7 @@ from lifelines import (
 from lifelines.tests.test_estimation import known_parametric_univariate_fitters
 
 from lifelines.generate_datasets import generate_random_lifetimes, generate_hazard_rates
-from lifelines.plotting import plot_lifetimes, cdf_plot, qq_plot
+from lifelines.plotting import plot_lifetimes, cdf_plot, qq_plot, rmst_plot
 from lifelines.datasets import (
     load_waltons,
     load_regression_dataset,
@@ -53,15 +53,17 @@ class TestPlotting:
 
         self.plt = plt
 
-    def test_parametric_univarite_fitters_has_hazard_plotting_methods(self, block, known_parametric_univariate_fitters):
+    def test_parametric_univariate_fitters_has_hazard_plotting_methods(
+        self, block, known_parametric_univariate_fitters
+    ):
         positive_sample_lifetimes = np.arange(1, 100)
         for fitter in known_parametric_univariate_fitters:
             f = fitter().fit(positive_sample_lifetimes)
             assert f.plot_hazard() is not None
-        self.plt.title("test_parametric_univarite_fitters_has_hazard_plotting_methods")
+        self.plt.title("test_parametric_univariate_fitters_has_hazard_plotting_methods")
         self.plt.show(block=block)
 
-    def test_parametric_univarite_fitters_has_cumhazard_plotting_methods(
+    def test_parametric_univaraite_fitters_has_cumhazard_plotting_methods(
         self, block, known_parametric_univariate_fitters
     ):
         positive_sample_lifetimes = np.arange(1, 100)
@@ -69,10 +71,10 @@ class TestPlotting:
             f = fitter().fit(positive_sample_lifetimes)
             assert f.plot_cumulative_hazard() is not None
 
-        self.plt.title("test_parametric_univarite_fitters_has_cumhazard_plotting_methods")
+        self.plt.title("test_parametric_univaraite_fitters_has_cumhazard_plotting_methods")
         self.plt.show(block=block)
 
-    def test_parametric_univarite_fitters_has_survival_plotting_methods(
+    def test_parametric_univariate_fitters_has_survival_plotting_methods(
         self, block, known_parametric_univariate_fitters
     ):
         positive_sample_lifetimes = np.arange(1, 100)
@@ -80,7 +82,7 @@ class TestPlotting:
             f = fitter().fit(positive_sample_lifetimes)
             assert f.plot_survival_function() is not None
 
-        self.plt.title("test_parametric_univarite_fitters_has_survival_plotting_methods")
+        self.plt.title("test_parametric_univariate_fitters_has_survival_plotting_methods")
         self.plt.show(block=block)
 
     def test_negative_times_still_plots(self, block, kmf):
@@ -294,11 +296,14 @@ class TestPlotting:
 
     def test_parametric_plotting_with_show_censors(self, block):
         n = 200
-        T = 50 * np.random.exponential(1, size=(n, 1)) ** 2
-        E = np.random.rand(n) > 0.2
+        T = (np.sqrt(50) * np.random.exponential(1, size=n)) ** 2
+        E = T < 100
+        T = np.minimum(T, 100)
 
-        wf = WeibullFitter().fit(T, E, timeline=np.linspace(0, 5, 1000))
+        wf = WeibullFitter().fit(T, E)
+        wf.plot_density(show_censors=True)
         wf.plot_cumulative_density(show_censors=True)
+
         self.plt.title("test_parametric_plotting_with_show_censors:cumulative_density")
         self.plt.show(block=block)
 
@@ -308,6 +313,10 @@ class TestPlotting:
 
         wf.plot_cumulative_hazard(show_censors=True)
         self.plt.title("test_parametric_plotting_with_show_censors:cumulative_hazard")
+        self.plt.show(block=block)
+
+        wf.plot_density(show_censors=True)
+        self.plt.title("test_parametric_plotting_with_show_censors:density")
         self.plt.show(block=block)
         return
 
@@ -648,4 +657,30 @@ class TestPlotting:
             ax = qq_plot(model, ax=axes[i])
             assert ax is not None
         self.plt.suptitle("test_qq_plot_right_censoring_with_known_distribution")
+        self.plt.show(block=block)
+
+    def test_rmst_plot_with_single_model(self, block):
+        waltons = load_waltons()
+        kmf = KaplanMeierFitter().fit(waltons["T"], waltons["E"])
+
+        rmst_plot(kmf, t=40.0)
+        self.plt.title("test_rmst_plot_with_single_model")
+        self.plt.show(block=block)
+
+    def test_rmst_plot_with_two_model(self, block):
+        waltons = load_waltons()
+        ix = waltons["group"] == "control"
+        kmf_con = KaplanMeierFitter().fit(waltons.loc[ix]["T"], waltons.loc[ix]["E"], label="control")
+        kmf_exp = KaplanMeierFitter().fit(waltons.loc[~ix]["T"], waltons.loc[~ix]["E"], label="exp")
+
+        rmst_plot(kmf_con, model2=kmf_exp, t=40.0)
+        self.plt.title("test_rmst_plot_with_two_model")
+        self.plt.show(block=block)
+
+    def test_hide_ci_from_legend(self, block):
+        waltons = load_waltons()
+        kmf = KaplanMeierFitter().fit(waltons["T"], waltons["E"])
+        ax = kmf.plot(ci_show=True, ci_only_lines=True, ci_legend=False)
+        ax.legend(title="Legend title")
+        self.plt.title("test_hide_ci_from_legend")
         self.plt.show(block=block)

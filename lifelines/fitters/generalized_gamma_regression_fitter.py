@@ -19,12 +19,13 @@ class GeneralizedGammaRegressionFitter(ParametricRegressionFitter):
     The survival function is:
 
     .. math::
-        S(t \;|\; x)=\left\{ \begin{array}{}
-           1-{{\Gamma}_{RL}}\left( \tfrac{1}{{{\lambda }^{2}}};\tfrac{{{e}^{\lambda \left( \tfrac{\text{ln}(t)-\mu }{\sigma } \right)}}}{{{\lambda }^{2}}} \right)\text{ if }\lambda >0  \\
-           {{\Gamma}_{RL}}\left( \tfrac{1}{{{\lambda }^{2}}};\tfrac{{{e}^{\lambda \left( \tfrac{\text{ln}(t)-\mu }{\sigma } \right)}}}{{{\lambda }^{2}}} \right)\text{       if }\lambda < 0  \\
+
+        S(t; x)=\left\{  \begin{array}{}
+           1-\Gamma_{RL}\left( \frac{1}{{{\lambda }^{2}}};\frac{{e}^{\lambda \left( \frac{\log(t)-\mu }{\sigma} \right)}}{\lambda ^{2}} \right)  \textit{ if } \lambda> 0 \\
+              \Gamma_{RL}\left( \frac{1}{{{\lambda }^{2}}};\frac{{e}^{\lambda \left( \frac{\log(t)-\mu }{\sigma} \right)}}{\lambda ^{2}} \right)  \textit{ if } \lambda \le 0 \\
         \end{array} \right.\,\!
 
-    where :math:`\Gamma_{RL}` is the regularized lower incomplete Gamma function, and :math:`\sigma = \exp(\alpha x^T), \lambda = \beta x^T, \mu = \gamma x^T`.
+    where :math:`\Gamma_{RL}` is the regularized lower incomplete Gamma function, and :math:`\sigma = \sigma(x) = \exp(\alpha x^T), \lambda = \lambda(x) = \beta x^T, \mu = \mu(x) = \gamma x^T`.
 
     This model has the Exponential, Weibull, Gamma and Log-Normal as sub-models, and thus can be used as a way to test which
     model to use:
@@ -37,7 +38,7 @@ class GeneralizedGammaRegressionFitter(ParametricRegressionFitter):
     6. When :math:`-\sigma = \lambda` then the data is Inverse-Gamma.
 
 
-    After calling the `.fit` method, you have access to properties like: ``cumulative_hazard_``, ``survival_function_``,
+    After calling the ``.fit`` method, you have access to properties like: ``cumulative_hazard_``, ``survival_function_``,
     A summary of the fit is available with the method ``print_summary()``.
 
 
@@ -77,8 +78,11 @@ class GeneralizedGammaRegressionFitter(ParametricRegressionFitter):
         The estimated hazard (with custom timeline if provided)
     survival_function_ : DataFrame
         The estimated survival function (with custom timeline if provided)
-    cumumlative_density_ : DataFrame
+    cumulative_density_ : DataFrame
         The estimated cumulative density function (with custom timeline if provided)
+    density: DataFrame
+        The estimated density function (PDF) (with custom timeline if provided)
+
     variance_matrix_ : numpy array
         The variance matrix of the coefficients
     median_: float
@@ -99,8 +103,6 @@ class GeneralizedGammaRegressionFitter(ParametricRegressionFitter):
         The entry array provided, or None
     """
     _fitted_parameter_names = ["sigma_", "mu_", "lambda_"]
-    _scipy_fit_method = "SLSQP"
-    _scipy_fit_options = {"ftol": 1e-6, "maxiter": 200}
 
     def _create_initial_point(self, Ts, E, entries, weights, Xs):
         # detect constant columns
@@ -141,13 +143,13 @@ class GeneralizedGammaRegressionFitter(ParametricRegressionFitter):
             return d
 
     def _survival_function(self, params, T, Xs):
-        lambda_ = np.clip(Xs["lambda_"] @ params["lambda_"], 1e-25, 1e10)
+        lambda_ = Xs["lambda_"] @ params["lambda_"]
         sigma_ = safe_exp(Xs["sigma_"] @ params["sigma_"])
         mu_ = Xs["mu_"] @ params["mu_"]
 
         Z = (log(T) - mu_) / sigma_
         ilambda_2 = 1 / lambda_ ** 2
-        exp_term = safe_exp(lambda_ * Z - 2 * log(np.abs(lambda_)))
+        exp_term = np.clip(safe_exp(lambda_ * Z) * ilambda_2, 1e-25, 1e25)
 
         return np.where(lambda_ > 0, gammaincc(ilambda_2, exp_term), gammainc(ilambda_2, exp_term))
 
@@ -158,7 +160,7 @@ class GeneralizedGammaRegressionFitter(ParametricRegressionFitter):
 
         ilambda_2 = 1 / lambda_ ** 2
         Z = (log(T) - mu_) / np.clip(sigma_, 1e-10, 1e20)
-        exp_term = np.clip(safe_exp(lambda_ * Z - 2 * log(np.abs(lambda_))), 1e-300, np.inf)
+        exp_term = np.clip(safe_exp(lambda_ * Z) * ilambda_2, 1e-25, 1e25)
 
         return -np.where(lambda_ > 0, gammainccln(ilambda_2, exp_term), gammaincln(ilambda_2, exp_term))
 
@@ -169,7 +171,7 @@ class GeneralizedGammaRegressionFitter(ParametricRegressionFitter):
 
         ilambda_2 = 1 / lambda_ ** 2
         Z = (log(T) - mu_) / np.clip(safe_exp(ln_sigma_), 1e-10, 1e20)
-        exp_term = np.clip(safe_exp(lambda_ * Z - 2 * log(np.abs(lambda_))), 1e-300, np.inf)
+        exp_term = np.clip(safe_exp(lambda_ * Z) * ilambda_2, 1e-25, 1e25)
 
         return (
             log(np.abs(lambda_))

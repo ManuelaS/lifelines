@@ -14,6 +14,8 @@ from lifelines.utils import (
     format_p_value,
     format_floats,
     interpolate_at_times_and_return_pandas,
+    _expected_value_of_survival_up_to_t,
+    _expected_value_of_survival_squared_up_to_t,
 )
 
 from lifelines import KaplanMeierFitter
@@ -28,6 +30,190 @@ __all__ = [
     "power_under_cph",
     "sample_size_necessary_under_cph",
 ]
+
+
+class StatisticalResult:
+    """
+    This class holds the result of statistical tests with a nice printer wrapper to display the results.
+
+    Note
+    -----
+    This class' API changed in version 0.16.0.
+
+    Parameters
+    ----------
+    p_value: iterable or float
+        the p-values of a statistical test(s)
+    test_statistic: iterable or float
+        the test statistics of a statistical test(s). Must be the same size as p-values if iterable.
+    test_name: string
+        the test that was used. Lifelines should set this.
+    name: iterable or string
+        if this class holds multiple results (ex: from a pairwise comparison), this can hold the names. Must be the same size as p-values if iterable.
+    kwargs:
+        additional information to attach to the object and display in ``print_summary()``.
+
+    """
+
+    def __init__(self, p_value, test_statistic, name=None, test_name=None, **kwargs):
+        self.p_value = p_value
+        self.test_statistic = test_statistic
+        self.test_name = test_name
+
+        self._p_value = _to_1d_array(p_value)
+        self._test_statistic = _to_1d_array(test_statistic)
+
+        assert len(self._p_value) == len(self._test_statistic)
+
+        if name is not None:
+            self.name = _to_list(name)
+            assert len(self.name) == len(self._test_statistic)
+        else:
+            self.name = None
+
+        for kw, value in kwargs.items():
+            setattr(self, kw, value)
+
+        kwargs["test_name"] = test_name
+        self._kwargs = kwargs
+
+    def print_specific_style(self, style, decimals, **kwargs):
+        """
+        Parameters
+        -----------
+
+        style: str
+         one of {'ascii', 'html', 'latex'}
+
+        """
+        if style == "html":
+            return self.html_print(decimals, **kwargs)
+        elif style == "ascii":
+            return self.ascii_print(decimals, **kwargs)
+        elif style == "latex":
+            return self.latex_print(decimals, **kwargs)
+        else:
+            raise ValueError("style not available.")
+
+    def print_summary(self, decimals=2, style=None, **kwargs):
+        """
+        Print summary statistics describing the fit, the coefficients, and the error bounds.
+
+        Parameters
+        -----------
+        decimals: int, optional (default=2)
+            specify the number of decimal places to show
+        kwargs:
+            print additional meta data in the output (useful to provide model names, dataset names, etc.) when comparing
+            multiple outputs.
+
+        """
+        if style is not None:
+            self.print_specific_style(style, decimals, **kwargs)
+        else:
+            try:
+                from IPython.core.getipython import get_ipython
+
+                ip = get_ipython()
+                if ip and ip.has_trait("kernel"):
+                    self.html_print_inside_jupyter(decimals, **kwargs)
+                else:
+                    self.ascii_print(decimals, **kwargs)
+            except ImportError:
+                self.ascii_print(decimals, **kwargs)
+
+    def html_print_inside_jupyter(self, decimals, **kwargs):
+        from IPython.display import HTML, display
+
+        display(HTML(self.to_html(decimals, **kwargs)))
+
+    def html_print(self, decimals, **kwargs):
+        print(self.to_html(decimals, **kwargs))
+
+    def ascii_print(self, decimals, **kwargs):
+        print(self.to_ascii(decimals, **kwargs))
+
+    def to_html(self, decimals, **kwargs):
+        extra_kwargs = dict(list(self._kwargs.items()) + list(kwargs.items()))
+        summary_df = self.summary
+
+        headers = []
+        for k, v in extra_kwargs.items():
+            headers.append((k, v))
+
+        header_df = pd.DataFrame.from_records(headers).set_index(0)
+        header_html = header_df.to_html(header=False, notebook=True, index_names=False)
+
+        summary_html = summary_df.to_html(
+            float_format=format_floats(decimals), formatters={**{"p": format_p_value(decimals)}}
+        )
+
+        return header_html + summary_html
+
+    def latex_print(self, decimals, **kwargs):
+        print(self.to_latex(decimals, **kwargs))
+
+    def to_latex(self, decimals, **kwargs):
+        return self.summary.to_latex()
+
+    @property
+    def summary(self):
+        """
+
+        Returns
+        -------
+        DataFrame
+            a DataFrame containing the test statistics and the p-value
+
+        """
+        cols = ["test_statistic", "p"]
+
+        # test to see if self.names is a tuple
+        if self.name and isinstance(self.name[0], tuple):
+            index = pd.MultiIndex.from_tuples(self.name)
+        else:
+            index = self.name
+
+        return pd.DataFrame(list(zip(self._test_statistic, self._p_value)), columns=cols, index=index).sort_index()
+
+    def __repr__(self):
+        return "<lifelines.StatisticalResult: {0}>".format(self.test_name)
+
+    def to_ascii(self, decimals=2, **kwargs):
+        extra_kwargs = dict(list(self._kwargs.items()) + list(kwargs.items()))
+        meta_data = self._stringify_meta_data(extra_kwargs)
+
+        df = self.summary
+        with np.errstate(invalid="ignore", divide="ignore"):
+            df["-log2(p)"] = -np.log2(df["p"])
+
+        s = self.__repr__()
+        s += "\n" + meta_data + "\n"
+        s += "---\n"
+        s += df.to_string(
+            float_format=format_floats(decimals),
+            index=self.name is not None,
+            formatters={"p": format_p_value(decimals)},
+        )
+
+        return s
+
+    def _stringify_meta_data(self, dictionary):
+        longest_key = max([len(k) for k in dictionary])
+        justify = string_justify(longest_key)
+        s = ""
+        for k, v in dictionary.items():
+            s += "{} = {}\n".format(justify(k), v)
+
+        return s
+
+    def __add__(self, other):
+        """useful for aggregating results easily"""
+        p_values = np.r_[self._p_value, other._p_value]
+        test_statistics = np.r_[self._test_statistic, other._test_statistic]
+        names = self.name + other.name
+        kwargs = dict(list(self._kwargs.items()) + list(other._kwargs.items()))
+        return StatisticalResult(p_values, test_statistics, name=names, **kwargs)
 
 
 def sample_size_necessary_under_cph(power, ratio_of_participants, p_exp, p_con, postulated_hazard_ratio, alpha=0.05):
@@ -102,7 +288,7 @@ def sample_size_necessary_under_cph(power, ratio_of_participants, p_exp, p_con, 
     return int(np.ceil(n_exp)), int(np.ceil(n_con))
 
 
-def power_under_cph(n_exp, n_con, p_exp, p_con, postulated_hazard_ratio, alpha=0.05):
+def power_under_cph(n_exp, n_con, p_exp, p_con, postulated_hazard_ratio, alpha=0.05) -> float:
     """
     This computes the power of the hypothesis test that the two groups, experiment and control,
     have different hazards (that is, the relative hazard ratio is different from 1.)
@@ -157,7 +343,7 @@ def power_under_cph(n_exp, n_con, p_exp, p_con, postulated_hazard_ratio, alpha=0
 
 def survival_difference_at_fixed_point_in_time_test(
     point_in_time, durations_A, durations_B, event_observed_A=None, event_observed_B=None, **kwargs
-):
+) -> StatisticalResult:
     """
 
     Often analysts want to compare the survival-ness of groups at specific times, rather than comparing the entire survival curves against each other.
@@ -236,14 +422,22 @@ def survival_difference_at_fixed_point_in_time_test(
     clog = lambda s: log(-log(s))
 
     X = (clog(sA_t) - clog(sB_t)) ** 2 / (sigma_sqA / log(sA_t) ** 2 + sigma_sqB / log(sB_t) ** 2)
-    p_value = chisq_test(X, 1)
+    p_value = _chisq_test_p_value(X, 1)
 
     return StatisticalResult(
-        p_value, X, null_distribution="chi squared", degrees_of_freedom=1, point_in_time=point_in_time, **kwargs
+        p_value,
+        X,
+        null_distribution="chi squared",
+        degrees_of_freedom=1,
+        point_in_time=point_in_time,
+        test_name="survival_difference_at_fixed_point_in_time_test",
+        **kwargs
     )
 
 
-def logrank_test(durations_A, durations_B, event_observed_A=None, event_observed_B=None, t_0=-1, **kwargs):
+def logrank_test(
+    durations_A, durations_B, event_observed_A=None, event_observed_B=None, t_0=-1, **kwargs
+) -> StatisticalResult:
     r"""
     Measures and reports on whether two intensity processes are different. That is, given two
     event series, determines whether the data generating processes are statistically different.
@@ -261,8 +455,24 @@ def logrank_test(durations_A, durations_B, event_observed_A=None, event_observed
     Note
     -----
 
-    The logrank test has maximum power when the assumption of proportional hazards is true. As a consequence, if the survival
+    - The logrank test has maximum power when the assumption of proportional hazards is true. As a consequence, if the survival
     curves cross, the logrank test will give an inaccurate assessment of differences.
+
+    - This implementation is a special case of the function ``multivariate_logrank_test``, which is used internally.
+    See Survival and Event Analysis, page 108.
+
+    - There are only disadvantages to using the log-rank test versus using the Cox regression. See more `here <https://discourse.datamethods.org/t/when-is-log-rank-preferred-over-univariable-cox-regression/2344>`_
+    for a discussion. To convert to using the Cox regression:
+
+    >>> from lifelines import CoxPHFitter
+    >>>
+    >>> dfA = pd.DataFrame({'E': event_observed_A, 'T': durations_A, 'groupA': 1})
+    >>> dfB = pd.DataFrame({'E': event_observed_B, 'T': durations_B, 'groupA': 0})
+    >>> df = pd.concat([dfA, dfB])
+    >>>
+    >>> cph = CoxPHFitter().fit(df, 'T', 'E')
+    >>> cph.print_summary()
+
 
 
     Parameters
@@ -310,10 +520,6 @@ def logrank_test(durations_A, durations_B, event_observed_A=None, event_observed
     >>> print(results.p_value)        # 0.7676
     >>> print(results.test_statistic) # 0.0872
 
-    Notes
-    -----
-    This is a special case of the function ``multivariate_logrank_test``, which is used internally.
-    See Survival and Event Analysis, page 108.
 
     See Also
     --------
@@ -330,12 +536,12 @@ def logrank_test(durations_A, durations_B, event_observed_A=None, event_observed
     event_times = np.r_[event_times_A, event_times_B]
     groups = np.r_[np.zeros(event_times_A.shape[0], dtype=int), np.ones(event_times_B.shape[0], dtype=int)]
     event_observed = np.r_[event_observed_A, event_observed_B]
-    return multivariate_logrank_test(event_times, groups, event_observed, t_0=t_0, **kwargs)
+    return multivariate_logrank_test(event_times, groups, event_observed, t_0=t_0, test_name="logrank_test", **kwargs)
 
 
 def pairwise_logrank_test(
     event_durations, groups, event_observed=None, t_0=-1, **kwargs
-):  # pylint: disable=too-many-locals
+) -> StatisticalResult:  # pylint: disable=too-many-locals
 
     r"""
     Perform the logrank test pairwise for all :math:`n \ge 2` unique groups.
@@ -390,7 +596,7 @@ def pairwise_logrank_test(
 
     n_unique_groups = unique_groups.shape[0]
 
-    result = StatisticalResult([], [], [])
+    result = StatisticalResult([], [], [], test_name="pairwise_logrank_test")
 
     for i1, i2 in combinations(np.arange(n_unique_groups), 2):
         g1, g2 = unique_groups[[i1, i2]]
@@ -408,9 +614,13 @@ def pairwise_logrank_test(
     return result
 
 
+def difference_of_restricted_mean_survival_time_test(model1, model2, t):
+    pass
+
+
 def multivariate_logrank_test(
     event_durations, groups, event_observed=None, t_0=-1, **kwargs
-):  # pylint: disable=too-many-locals
+) -> StatisticalResult:  # pylint: disable=too-many-locals
     r"""
     This test is a generalization of the logrank_test: it can deal with n>2 populations (and should
     be equal when n=2):
@@ -474,6 +684,8 @@ def multivariate_logrank_test(
     pairwise_logrank_test
     logrank_test
     """
+    kwargs.setdefault("test_name", "multivariate_logrank_test")
+
     event_durations, groups = np.asarray(event_durations), np.asarray(groups)
     if event_observed is None:
         event_observed = np.ones((event_durations.shape[0], 1))
@@ -514,138 +726,14 @@ def multivariate_logrank_test(
     U = Z_j.iloc[:-1] @ np.linalg.pinv(V[:-1, :-1]) @ Z_j.iloc[:-1]  # Z.T*inv(V)*Z
 
     # compute the p-values and tests
-    p_value = chisq_test(U, n_groups - 1)
-
+    p_value = _chisq_test_p_value(U, n_groups - 1)
     return StatisticalResult(
         p_value, U, t_0=t_0, null_distribution="chi squared", degrees_of_freedom=n_groups - 1, **kwargs
     )
 
 
-class StatisticalResult(object):
-    """
-    This class holds the result of statistical tests with a nice printer wrapper to display the results.
-
-    Note
-    -----
-    This class' API changed in version 0.16.0.
-
-    Parameters
-    ----------
-    p_value: iterable or float
-        the p-values of a statistical test(s)
-    test_statistic: iterable or float
-        the test statistics of a statistical test(s). Must be the same size as p-values if iterable.
-    name: iterable or string
-        if this class holds multiple results (ex: from a pairwise comparison), this can hold the names. Must be the same size as p-values if iterable.
-    kwargs:
-        additional information to attach to the object and display in ``print_summary()``.
-
-    """
-
-    def __init__(self, p_value, test_statistic, name=None, **kwargs):
-        self.p_value = p_value
-        self.test_statistic = test_statistic
-
-        self._p_value = _to_1d_array(p_value)
-        self._test_statistic = _to_1d_array(test_statistic)
-
-        assert len(self._p_value) == len(self._test_statistic)
-
-        if name is not None:
-            self.name = _to_list(name)
-            assert len(self.name) == len(self._test_statistic)
-        else:
-            self.name = None
-
-        for kw, value in kwargs.items():
-            setattr(self, kw, value)
-
-        self._kwargs = kwargs
-
-    def print_summary(self, decimals=2, **kwargs):
-        """
-        Print summary statistics describing the fit, the coefficients, and the error bounds.
-
-        Parameters
-        -----------
-        decimals: int, optional (default=2)
-            specify the number of decimal places to show
-        kwargs:
-            print additional meta data in the output (useful to provide model names, dataset names, etc.) when comparing
-            multiple outputs.
-
-        """
-        print(self._to_string(decimals, **kwargs))
-
-    @property
-    def summary(self):
-        """
-
-        Returns
-        -------
-        DataFrame
-            a DataFrame containing the test statistics and the p-value
-
-        """
-        cols = ["test_statistic", "p"]
-
-        # test to see if self.names is a tuple
-        if self.name and isinstance(self.name[0], tuple):
-            index = pd.MultiIndex.from_tuples(self.name)
-        else:
-            index = self.name
-
-        return pd.DataFrame(list(zip(self._test_statistic, self._p_value)), columns=cols, index=index).sort_index()
-
-    def __repr__(self):
-        if self.name and len(self.name) == 1:
-            return "<lifelines.StatisticalResult: {0}>".format(self.name[0])
-        return "<lifelines.StatisticalResult>"
-
-    def _to_string(self, decimals=2, **kwargs):
-        extra_kwargs = dict(list(self._kwargs.items()) + list(kwargs.items()))
-        meta_data = self._stringify_meta_data(extra_kwargs)
-
-        df = self.summary
-        with np.errstate(invalid="ignore", divide="ignore"):
-            df["-log2(p)"] = -np.log2(df["p"])
-
-        s = self.__repr__()
-        s += "\n" + meta_data + "\n"
-        s += "---\n"
-        s += df.to_string(
-            float_format=format_floats(decimals),
-            index=self.name is not None,
-            formatters={"p": format_p_value(decimals)},
-        )
-
-        return s
-
-    def _stringify_meta_data(self, dictionary):
-        longest_key = max([len(k) for k in dictionary])
-        justify = string_justify(longest_key)
-        s = ""
-        for k, v in dictionary.items():
-            s += "{} = {}\n".format(justify(k), v)
-
-        return s
-
-    def __add__(self, other):
-        """useful for aggregating results easily"""
-        p_values = np.r_[self._p_value, other._p_value]
-        test_statistics = np.r_[self._test_statistic, other._test_statistic]
-        names = self.name + other.name
-        kwargs = dict(list(self._kwargs.items()) + list(other._kwargs.items()))
-        return StatisticalResult(p_values, test_statistics, name=names, **kwargs)
-
-
-def chisq_test(U, degrees_freedom):
+def _chisq_test_p_value(U, degrees_freedom) -> float:
     p_value = stats.chi2.sf(U, degrees_freedom)
-    return p_value
-
-
-def two_sided_z_test(Z):
-    p_value = 1 - np.max(stats.norm.cdf(Z), 1 - stats.norm.cdf(Z))
     return p_value
 
 
@@ -670,7 +758,7 @@ class TimeTransformers:
 
 def proportional_hazard_test(
     fitted_cox_model, training_df, time_transform="rank", precomputed_residuals=None, **kwargs
-):
+) -> StatisticalResult:
     """
     Test whether any variable in a Cox model breaks the proportional hazard assumption.
 
@@ -685,13 +773,9 @@ def proportional_hazard_test(
         {'all', 'km', 'rank', 'identity', 'log'}
         One of the strings above, a list of strings, or a function to transform the time (must accept (time, durations, weights) however). 'all' will present all the transforms.
     precomputed_residuals: DataFrame, optional
-        specify the scaled schoenfeld residuals, if already computed.
+        specify the scaled Schoenfeld residuals, if already computed.
     kwargs:
         additional parameters to add to the StatisticalResult
-
-    Returns
-    -------
-    StatisticalResult
 
     Notes
     ------
@@ -726,7 +810,7 @@ def proportional_hazard_test(
         for transform_name, transform in ((_, TimeTransformers().get(_)) for _ in time_transform):
             times = transform(durations, events, weights)[events.values]
             T = compute_statistic(times, scaled_resids)
-            p_values = _to_1d_array([chisq_test(t, 1) for t in T])
+            p_values = _to_1d_array([_chisq_test_p_value(t, 1) for t in T])
             result += StatisticalResult(
                 p_values,
                 T,
@@ -747,7 +831,7 @@ def proportional_hazard_test(
 
         T = compute_statistic(times, scaled_resids)
 
-        p_values = _to_1d_array([chisq_test(t, 1) for t in T])
+        p_values = _to_1d_array([_chisq_test_p_value(t, 1) for t in T])
         result = StatisticalResult(
             p_values,
             T,
